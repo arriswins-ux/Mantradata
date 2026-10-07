@@ -22,7 +22,10 @@ BOOK_NAME = "Bhagavad-gita-Swami-BG-Narasingha"   # your Gita PDF name (with or 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DASHBOARD_IMG = os.path.join(BASE_DIR, "krishna_dashboard.jpg")
 WITH_YOU_IMG = os.path.join(BASE_DIR, "krishna_with_you.jpg")
-BACKGROUND_IMG = os.path.join(BASE_DIR, "krishna.jpg")   # full-page background (change to any image)
+# Full-page background: put a GIF named background.gif in the folder to use it (animated).
+# If it is missing, the Krishna picture is used instead. You can also set any file name here.
+BACKGROUND_GIF = os.path.join(BASE_DIR, "background.gif")
+BACKGROUND_IMG = BACKGROUND_GIF if os.path.exists(BACKGROUND_GIF) else os.path.join(BASE_DIR, "krishna_with_you.jpg")
 
 st.set_page_config(page_title="Mantradata — Gita Guidance", page_icon="🕊️", layout="centered")
 
@@ -141,14 +144,58 @@ def gita_keywords(client, text):
         return ""
 
 
+KEY_FILES = [
+    ".streamlit/secrets.toml", ".streamlit/secrets.toml.txt",
+    "secrets.toml", "secrets.toml.txt",
+    ".env", "groq_key.txt", "groq_key.txt.txt", "key.txt",
+]
+
+
+def load_saved_key():
+    """Find the Groq key: environment variable, Streamlit secrets, or a key file next to app.py."""
+    key = os.getenv("GROQ_API_KEY", "").strip()
+    if key:
+        return key
+    try:
+        if "GROQ_API_KEY" in st.secrets:
+            return str(st.secrets["GROQ_API_KEY"]).strip()
+    except Exception:
+        pass
+    for name in KEY_FILES:  # looked up next to app.py, no matter where you start streamlit from
+        path = next((p for p in (os.path.join(BASE_DIR, *name.split("/")),
+                                 os.path.join(os.getcwd(), *name.split("/")))
+                     if os.path.isfile(p)), None)
+        if path:
+            try:
+                text = open(path, encoding="utf-8-sig", errors="ignore").read()
+            except OSError:
+                continue
+            match = re.search(r"gsk_[A-Za-z0-9_\-]+", text)  # Groq keys start with gsk_
+            if match:
+                return match.group(0)
+            # fallback: take the first non-empty line, remove "GROQ_API_KEY =" and quotes
+            for line in text.splitlines():
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    line = line.split("=", 1)[-1].strip().strip("\"'").strip()
+                    if len(line) > 20:
+                        return line
+    return ""
+
+
+@st.cache_resource(show_spinner=False)
+def encode_file(path, mtime):
+    with open(path, "rb") as f:
+        return base64.b64encode(f.read()).decode()
+
+
 def set_background(path):
-    """Use an image as the page background and make text/panels readable on top of it."""
+    """Use an image or GIF as the page background and make text/panels readable on top of it."""
     if not os.path.exists(path):
         return
     ext = os.path.splitext(path)[1].lower().strip(".")
-    mime = "image/png" if ext == "png" else "image/jpeg"
-    with open(path, "rb") as f:
-        encoded = base64.b64encode(f.read()).decode()
+    mime = {"png": "image/png", "gif": "image/gif", "webp": "image/webp"}.get(ext, "image/jpeg")
+    encoded = encode_file(path, os.path.getmtime(path))
     css = """
     <style>
     .stApp {
@@ -196,7 +243,16 @@ with st.sidebar:
     user_name = st.text_input("Your name", value="")
     user_age = st.number_input("Your age", min_value=10, max_value=100, value=19, step=1)
     user_profession = st.text_input("Profession / Studying", value="")
-    api_key = st.text_input("Groq API key", type="password", value=os.getenv("GROQ_API_KEY", ""))
+    saved_key = load_saved_key()
+    if saved_key:
+        api_key = saved_key
+        st.success("🔑 Groq API key loaded")
+    else:
+        api_key = st.text_input("Groq API key", type="password")
+        found = [n for n in KEY_FILES if os.path.isfile(os.path.join(BASE_DIR, *n.split("/")))]
+        st.caption(f"No key found. app.py is in: {BASE_DIR}")
+        st.caption(f"Command was started from: {os.getcwd()}")
+        st.caption(f"Key files seen there: {found if found else 'none'}")
     if st.button("Start new conversation"):
         st.session_state.pop("messages", None)
         st.rerun()
